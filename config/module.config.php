@@ -21,10 +21,10 @@ return [
         'routes' => [
             'admin' => [
                 'child_routes' => [
-                    'zip-importer' => [
+                    'zip-import' => [
                         'type' => 'Literal',
                         'options' => [
-                            'route' => '/zip-importer',
+                            'route' => '/zip-import',
                             'defaults' => [
                                 '__NAMESPACE__' => 'ZipImport\Controller',
                                 'controller' => 'Index',
@@ -65,7 +65,7 @@ return [
         'AdminModule' => [
             [
                 'label' => 'Zip Import',
-                'route' => 'admin/zip-importer',
+                'route' => 'admin/zip-import',
                 'resource' => 'ZipImport\Controller\Index'
             ],
         ],

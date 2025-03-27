@@ -23,7 +23,7 @@ class IndexController extends CSVImport\Controller\IndexController
         $form = $this->getForm(CSVImport\Form\ImportForm::class);
 
         // Modify the CSVImport Form to accept zipfiles only
-        $form->setAttribute('action', 'zip-importer/upload'); // uploadAction
+        $form->setAttribute('action', 'zip-import/upload'); // uploadAction
         $form->get('source')
             ->setOptions([
                 'label' => 'Zip File', //@translate
@@ -51,7 +51,7 @@ class IndexController extends CSVImport\Controller\IndexController
         $request = $this->getRequest();
 
         if (!$request->isPost()) {
-            return $this->redirect()->toRoute('admin/zip-importer');
+            return $this->redirect()->toRoute('admin/zip-import');
         }
 
         $post = $this->params()->fromPost();
@@ -67,14 +67,14 @@ class IndexController extends CSVImport\Controller\IndexController
         $importForm->setData($post);
         if (!$importForm->isValid()) {
             $this->messenger()->addFormErrors($importForm);
-            return $this->redirect()->toRoute('admin/zip-importer');
+            return $this->redirect()->toRoute('admin/zip-import');
         }
 
         // Unzip the archive to the tmp directory
         $zip = new ZipArchive;
         if (!$zip->open($post['source']['tmp_name'])) {
             $this->messenger()->addError('Must upload a zipfile.'); // @translate
-            return $this->redirect()->toRoute('admin/zip-importer');
+            return $this->redirect()->toRoute('admin/zip-import');
         }
 
         try {
@@ -84,7 +84,7 @@ class IndexController extends CSVImport\Controller\IndexController
         } catch (\Error $e) {
             unlink($post['source']['tmp_name']); // Delete zip
             $this->messenger()->addError('Zipfile is invalid. It may be corrupted.'); // @translate
-            return $this->redirect()->toRoute('admin/zip-importer');
+            return $this->redirect()->toRoute('admin/zip-import');
         }
         $this->setTempPermissions($tempPath);
         unlink($post['source']['tmp_name']); // Delete zip
@@ -95,7 +95,7 @@ class IndexController extends CSVImport\Controller\IndexController
             // Clean up directory
             $this->rmTemp($tempPath);
             $this->messenger()->addError('No spreadsheet found in archive'); // @translate
-            return $this->redirect()->toRoute('admin/zip-importer');
+            return $this->redirect()->toRoute('admin/zip-import');
         }
 
         $filePath = $source['path'];
@@ -121,14 +121,14 @@ class IndexController extends CSVImport\Controller\IndexController
         if (!$source->isValid()) {
             $message = $source->getErrorMessage() ?: 'The file is not valid.'; // @translate
             $this->messenger()->addError($message);
-            return $this->redirect()->toRoute('admin/zip-importer');
+            return $this->redirect()->toRoute('admin/zip-import');
         }
 
         $columns = $source->getHeaders();
         if (empty($columns)) {
             $message = $source->getErrorMessage() ?: 'The file has no headers.'; // @translate
             $this->messenger()->addError($message);
-            return $this->redirect()->toRoute('admin/zip-importer');
+            return $this->redirect()->toRoute('admin/zip-import');
         }
 
         $mappingOptions['columns'] = $columns;
@@ -169,7 +169,7 @@ class IndexController extends CSVImport\Controller\IndexController
         $request = $this->getRequest();
 
         if (!$request->isPost()) {
-            return $this->redirect()->toRoute('admin/zip-importer');
+            return $this->redirect()->toRoute('admin/zip-import');
         }
 
         $post = $this->params()->fromPost();

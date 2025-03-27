@@ -13,7 +13,7 @@ class UnsupportedController extends AbstractActionController
 
     protected function allActions() {
         $view = new ViewModel;
-        $view->setTemplate('zip-importer/index/unsupported');
+        $view->setTemplate('zip-import/index/unsupported');
         $this->messenger()->addError($this->error);
         return $view;
     }
