@@ -1,43 +1,39 @@
-name: Deploy Omeka Module/Theme via Git Tag
+name: Deploy Omeka via Tag
 
 on:
   push:
     tags:
-      - 'v*.*.*-*'  # Example: v1.2.3-prod or v1.0.0-stage
+      - 'v*.*.*-*'
 
 jobs:
-  deploy:
+  parse-env:
     runs-on: ubuntu-latest
-    environment: ${{ github.ref_name }}
-
+    outputs:
+      env_name: ${{ steps.setenv.outputs.env }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Parse target environment from tag
-        id: env
+      - name: Extract environment from tag
+        id: setenv
         run: |
-          echo "Raw ref: ${{ github.ref }}"
-          ENV=$(echo '${{ github.ref }}' | grep -oE '(dev|test|stage|prod)$' || true)
+          ENV=$(echo '${{ github.ref_name }}' | grep -oE '(dev|test|stage|prod)$' || true)
           if [ -z "$ENV" ]; then
-            echo "ERROR: Could not extract environment from tag."
+            echo "ERROR: Tag must end in -dev, -test, -stage, or -prod"
             exit 1
           fi
-          echo "ENV=$ENV" >> $GITHUB_ENV
-          echo "env_name=$ENV" >> $GITHUB_OUTPUT
+          echo "env=$ENV" >> $GITHUB_OUTPUT
 
-      - name: Validate required secrets
-        run: |
-          if [ -z "${{ secrets.SSH_KEY_BASTION }}" ]; then echo "Missing SSH_KEY_BASTION" && exit 1; fi
-          if [ -z "${{ secrets.SSH_KEY_TARGET }}" ]; then echo "Missing SSH_KEY_TARGET" && exit 1; fi
-          if [ -z "${{ secrets.BASTION_HOST }}" ]; then echo "Missing BASTION_HOST" && exit 1; fi
-          if [ -z "${{ secrets.TARGET_HOST }}" ]; then echo "Missing TARGET_HOST" && exit 1; fi
+  deploy:
+    needs: parse-env
+    runs-on: ubuntu-latest
+    environment: ${{ needs.parse-env.outputs.env_name }}
 
-      - name: Create deployment artifact
-        run: |
-          zip -r artifact.zip . -x ".git/*" "artifact.zip" ".github/workflows/deploy.yml"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-      - name: Configure SSH with ProxyJump (Bastion)
+      - name: Create artifact
+        run: zip -r artifact.zip . -x ".git/*" "artifact.zip"
+
+      - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_KEY_BASTION }}" > ~/.ssh/bastion.pem
@@ -57,39 +53,33 @@ jobs:
               ProxyJump bastion
           EOF
 
-      - name: Test SSH connection to target
-        run: |
-          ssh -o StrictHostKeyChecking=no target "echo '[INFO] SSH connection to target successful.'"
+      - name: Test SSH
+        run: ssh -o StrictHostKeyChecking=no target "echo '[INFO] SSH OK'"
 
-      - name: Upload artifact.zip via SCP
+      - name: Upload artifact
         uses: appleboy/scp-action@v0.1.3
         with:
           host: ${{ secrets.TARGET_HOST }}
           username: ubuntu
           key: ${{ secrets.SSH_KEY_TARGET }}
-          port: 22
           source: artifact.zip
           target: "~"
 
-      - name: Upload deploy.sh via SCP
+      - name: Upload deploy.sh
         uses: appleboy/scp-action@v0.1.3
         with:
           host: ${{ secrets.TARGET_HOST }}
           username: ubuntu
           key: ${{ secrets.SSH_KEY_TARGET }}
-          port: 22
           source: .github/workflows/deploy.sh
           target: "~"
 
-      - name: Execute deploy.sh remotely
+      - name: Run deploy.sh remotely
         uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.TARGET_HOST }}
           username: ubuntu
           key: ${{ secrets.SSH_KEY_TARGET }}
-          port: 22
           script: |
-            set -e
-            echo "[INFO] Starting remote deploy.sh..."
             chmod +x ~/deploy.sh
-            ~/deploy.sh ${{ env.ENV }} ${{ github.ref_name }}
+            ~/deploy.sh ${{ needs.parse-env.outputs.env_name }} ${{ github.ref_name }}
