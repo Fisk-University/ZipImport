@@ -23,7 +23,7 @@ jobs:
 
   deploy:
     needs: parse-env
-    runs-on: [self-hosted, Fisk-Rosenwald]
+    runs-on: self-hosted
     environment: ${{ needs.parse-env.outputs.env_name }}
 
     steps:
