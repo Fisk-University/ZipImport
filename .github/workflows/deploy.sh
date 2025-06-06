@@ -1,68 +1,66 @@
 #!/bin/bash
 set -e
 
-#ENV & ARG VALIDATION
 ENV=$1
 TAG=$2
 
-if [ -z "$ENV" ] || [ -z "$TAG" ]; then
-  echo "[ERROR] Usage: $0 <env> <tag>"
-  exit 1
-fi
-
-#SETUP LOGGING PATH 
 mkdir -p /var/log/deploy
 DATE=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="/var/log/deploy/deploy_${TAG}.log"
-S3_LOG_PATH="s3://rw.rosenwald-ci-${ENV}/logs/deploy_${TAG}.log"
+LOCAL_BACKUP_DIR="/var/backups/omeka-${ENV}-${DATE}"
+S3_BUCKET="rw.rosenwald-ci-cd-logs-backups"
 
-echo "[INFO] Deployment started for ${TAG} on ${ENV}" | tee $LOG_FILE
+# Create local backup
+echo "[INFO] Creating local backup of current modules..." | tee $LOG_FILE
+mkdir -p "$LOCAL_BACKUP_DIR"
+cp -r /var/www/html/omeka-s/modules "$LOCAL_BACKUP_DIR/" || echo "[WARN] Local backup failed" | tee -a $LOG_FILE
 
-#CHECK FOR ARTIFACT
-if [ ! -f ~/artifact.zip ]; then
-  echo "[ERROR] ~/artifact.zip not found." | tee -a $LOG_FILE
-  exit 1
-fi
+# Copy backup to S3
+echo "[INFO] Uploading backup to S3..." | tee -a $LOG_FILE
+aws s3 cp --recursive "$LOCAL_BACKUP_DIR/" "s3://${S3_BUCKET}/backups/${ENV}/${TAG}/" || echo "[WARN] S3 backup upload failed" | tee -a $LOG_FILE
 
-#UNPACK ARTIFACT FILE
-echo "[STEP] Unpacking artifact.zip..." | tee -a $LOG_FILE
-rm -rf ~/deployed
-unzip -o ~/artifact.zip -d ~/deployed >> $LOG_FILE 2>&1
+echo "[INFO] Deployment started for ${TAG} on ${ENV}" | tee -a $LOG_FILE
 
-#DEPLOY MODULES
+# Unpack artifact (already unzipped in ~/deployed)
+echo "[STEP] Running module deployment logic..." | tee -a $LOG_FILE
+
+FAILED=0
+
 if [ -d ~/deployed/modules ]; then
-  echo "[INFO] Module deployment detected." | tee -a $LOG_FILE
-
   for dir in ~/deployed/modules/*; do
     if [ -d "$dir" ]; then
       name=$(basename "$dir")
-      echo "[STEP] Deploying module: $name" | tee -a $LOG_FILE
+      echo "Deploying module: $name" | tee -a $LOG_FILE
 
-      TARGET_DIR="/var/www/html/omeka-s/modules/$name"
-      rsync -av "$dir/" "$TARGET_DIR/" >> $LOG_FILE 2>&1
+      # Backup individual module before rsync
+      cp -r "/var/www/html/omeka-s/modules/$name" "$LOCAL_BACKUP_DIR/${name}_preupdate" 2>/dev/null || true
+
+      rsync -av "$dir/" "/var/www/html/omeka-s/modules/$name/" >> $LOG_FILE || FAILED=1
 
       if [ -f "$dir/composer.json" ] && [ ! -d "$dir/vendor" ]; then
-        echo "[INFO] Running composer install for module: $name" | tee -a $LOG_FILE
-        if command -v composer &> /dev/null; then
-          cd "$TARGET_DIR"
-          composer install --no-dev --prefer-dist >> $LOG_FILE 2>&1 || {
-            echo "[WARN] Composer install failed for $name" | tee -a $LOG_FILE
-          }
-        else
-          echo "[WARN] Composer not found, skipping for $name" | tee -a $LOG_FILE
-        fi
+        echo "Running composer install for module: $name" | tee -a $LOG_FILE
+        cd "/var/www/html/omeka-s/modules/$name"
+        composer install --no-dev --prefer-dist >> $LOG_FILE 2>&1 || FAILED=1
+      fi
+
+      if [ "$FAILED" -ne 0 ]; then
+        echo "[ERROR] Deployment failed for $name. Restoring backup..." | tee -a $LOG_FILE
+        rm -rf "/var/www/html/omeka-s/modules/$name"
+        cp -r "$LOCAL_BACKUP_DIR/${name}_preupdate" "/var/www/html/omeka-s/modules/$name" || echo "[FATAL] Could not restore backup for $name" | tee -a $LOG_FILE
       fi
     fi
   done
 else
-  echo "[ERROR] modules/ directory not found in artifact." | tee -a $LOG_FILE
+  echo "[ERROR] No modules found to deploy." | tee -a $LOG_FILE
   exit 1
 fi
 
-#CLEANUP
+# Cleanup
 echo "[STEP] Cleaning up..." | tee -a $LOG_FILE
 rm -rf ~/artifact.zip ~/deployed
 
-#PUSH TO S3
+# Upload log to S3
+echo "[INFO] Uploading log file to S3..." | tee -a $LOG_FILE
+aws s3 cp "$LOG_FILE" "s3://${S3_BUCKET}/logs/${ENV}/deploy_${TAG}.log" || echo "[WARN] S3 log upload failed" | tee -a $LOG_FILE
+
 echo "[SUCCESS] Deployment complete for ${TAG}" | tee -a $LOG_FILE
-aws s3 cp "$LOG_FILE" "$S3_LOG_PATH" || echo "[WARN] S3 log upload failed"
