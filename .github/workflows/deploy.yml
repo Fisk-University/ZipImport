@@ -1,0 +1,71 @@
+name: Deploy Omeka Module/Theme via Git Tag
+
+on:
+  push:
+    tags:
+      - 'v*.*.*-*'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Extract target environment
+        run: |
+          echo "ENV=$(echo '${{ github.ref }}' | grep -oE '(dev|test|stage|prod)$')" >> $GITHUB_ENV
+
+      - name: Create deployment artifact
+        run: zip -r artifact.zip . -x ".git/*" "*.zip"
+
+      - name: Configure SSH with ProxyJump (bastion)
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY_BASTION }}" > ~/.ssh/bastion.pem
+          echo "${{ secrets.SSH_KEY_TARGET }}" > ~/.ssh/target.pem
+          chmod 600 ~/.ssh/*.pem
+
+          echo "Host bastion" > ~/.ssh/config
+          echo "  HostName ${{ secrets.BASTION_HOST }}" >> ~/.ssh/config
+          echo "  User ec2-user" >> ~/.ssh/config
+          echo "  IdentityFile ~/.ssh/bastion.pem" >> ~/.ssh/config
+
+          echo "Host target" >> ~/.ssh/config
+          echo "  HostName ${{ secrets.TARGET_HOST }}" >> ~/.ssh/config
+          echo "  User ubuntu" >> ~/.ssh/config
+          echo "  IdentityFile ~/.ssh/target.pem" >> ~/.ssh/config
+          echo "  ProxyJump bastion" >> ~/.ssh/config
+
+      - name: Upload artifact.zip via SCP
+        uses: appleboy/scp-action@v0.1.3
+        with:
+          host: ${{ secrets.TARGET_HOST }}
+          username: ubuntu
+          key: ${{ secrets.SSH_KEY_TARGET }}
+          port: 22
+          source: artifact.zip
+          target: "~"
+
+      - name: Upload deploy.sh via SCP
+        uses: appleboy/scp-action@v0.1.3
+        with:
+          host: ${{ secrets.TARGET_HOST }}
+          username: ubuntu
+          key: ${{ secrets.SSH_KEY_TARGET }}
+          port: 22
+          source: .github/workflows/deploy.sh
+          target: "~"
+
+      - name: Run deploy.sh via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.TARGET_HOST }}
+          username: ubuntu
+          key: ${{ secrets.SSH_KEY_TARGET }}
+          port: 22
+          script: |
+            chmod +x ~/deploy.sh
+            ~/deploy.sh ${{ env.ENV }} ${{ github.ref_name }}
