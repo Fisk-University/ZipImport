@@ -38,7 +38,6 @@ jobs:
           MODULE_NAME="ZipImport"
           TAG="${{ needs.parse-env.outputs.tag_name }}"
           ZIP_NAME="${MODULE_NAME}_${TAG}.zip"
-
           # Exclude unnecessary .zip file from repo
           zip -r "$ZIP_NAME" . -x ".git/*" "GitHub Sample Upload Structure.zip"
 
@@ -50,6 +49,7 @@ jobs:
           aws s3 cp "$ZIP_NAME" "s3://${{ secrets.S3_BUCKET_NAME }}/${{ needs.parse-env.outputs.env_name }}/artifacts/modules/$ZIP_NAME"
 
       - name: Trigger and Monitor Deployment via SSM
+        id: ssm
         run: |
           ENV="${{ needs.parse-env.outputs.env_name }}"
           TAG="${{ needs.parse-env.outputs.tag_name }}"
@@ -67,14 +67,13 @@ jobs:
               \"unzip -o /tmp/module-artifact.zip -d /tmp/deployed-module\",
               \"chmod +x /tmp/deployed-module/.github/workflows/deploy.sh\",
               \"/tmp/deployed-module/.github/workflows/deploy.sh $ENV $TAG\"
-            ]" \
+              ]" \
             --region us-east-1 \
             --query "Command.CommandId" \
             --output text)
 
           echo "SSM Command ID: $CMD_ID"
           echo "Waiting for deployment to complete..."
-
           sleep 15
           STATUS="InProgress"
           TIMEOUT=60
@@ -92,6 +91,10 @@ jobs:
             ELAPSED=$((ELAPSED + 5))
           done
 
+          if [[ "$STATUS" != "Success" ]]; then
+            echo "::error ::Deployment failed with status: $STATUS"
+          fi
+
           echo "==== SSM OUTPUT BEGIN ===="
           aws ssm get-command-invocation \
             --command-id "$CMD_ID" \
@@ -100,8 +103,3 @@ jobs:
             --query "StandardOutputContent" \
             --output text || echo "[ERROR] Could not fetch SSM output"
           echo "==== SSM OUTPUT END ===="
-
-          if [[ "$STATUS" != "Success" ]]; then
-            echo "::error ::Deployment failed with status: $STATUS"
-            exit 1
-          fi

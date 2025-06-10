@@ -34,12 +34,6 @@ echo "[STEP] Validating structure..." | tee -a "$LOG_FILE"
 [ ! -f "$DEST_PATH/config/module.ini" ] && echo "[ERROR] module.ini missing" | tee -a "$LOG_FILE" && FAIL=1
 find "$DEST_PATH/view" -name "*.phtml" | grep . || { echo "[ERROR] No .phtml templates" | tee -a "$LOG_FILE"; FAIL=1; }
 
-# Composer install
-if [ -f "$DEST_PATH/composer.json" ]; then
-  echo "[INFO] Running composer install..." | tee -a "$LOG_FILE"
-  cd "$DEST_PATH" && composer install --no-dev --optimize-autoloader >> "$LOG_FILE" 2>&1 || echo "[WARN] Composer failed" | tee -a "$LOG_FILE"
-fi
-
 echo "[STEP] Scanning Apache logs..." | tee -a "$LOG_FILE"
 tail -n 200 /var/log/apache2/error.log | grep -i "fatal" >> "$LOG_FILE" || echo "[INFO] No fatal errors" | tee -a "$LOG_FILE"
 
