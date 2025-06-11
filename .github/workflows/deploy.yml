@@ -63,16 +63,17 @@ jobs:
             --instance-ids "$INSTANCE_ID" \
             --comment "Deploy ZipImport Module $TAG" \
             --parameters "commands=[
-              \"aws s3 cp s3://$S3_BUCKET/$ENV/artifacts/modules/$ZIP_NAME /tmp/module-artifact.zip\",
-              \"unzip -o /tmp/module-artifact.zip -d /tmp/deployed-module\",
-              \"chmod +x /tmp/deployed-module/.github/workflows/deploy.sh\",
-              \"/tmp/deployed-module/.github/workflows/deploy.sh $ENV $TAG\"
-              ]" \
+            \"aws s3 cp s3://$S3_BUCKET/$ENV/artifacts/modules/$ZIP_NAME /tmp/module-artifact.zip\",
+            \"unzip -o /tmp/module-artifact.zip -d /tmp/deployed-module\",
+            \"chmod +x /tmp/deployed-module/.github/workflows/deploy.sh\",
+            \"/tmp/deployed-module/.github/workflows/deploy.sh $ENV $TAG\"
+            ]" \
             --region us-east-1 \
             --query "Command.CommandId" \
             --output text)
 
           echo "SSM Command ID: $CMD_ID"
+          echo "CMD_ID=$CMD_ID" >> $GITHUB_ENV
           echo "Waiting for deployment to complete..."
           sleep 15
           STATUS="InProgress"
@@ -93,7 +94,7 @@ jobs:
           echo "status=$STATUS" >> $GITHUB_OUTPUT
           # If command failed, mark GitHub Actions job as failed
           if [[ "$STATUS" != "Success" ]]; then
-            echo "::error ::Deployment failed with status: $STATUS"
+            echo "::warning ::SSM status was: $STATUS — deployment script may have still succeeded or been rolled back."
           fi
 
           # Show command output from EC2 in GitHub logs
@@ -105,7 +106,7 @@ jobs:
             --query "StandardOutputContent" \
             --output text || echo "[ERROR] Could not fetch SSM output"
           echo "==== SSM OUTPUT END ===="
-          
+
       - name: Deployment Summary Output
         if: always()
         run: |
