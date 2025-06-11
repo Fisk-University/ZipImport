@@ -90,11 +90,13 @@ jobs:
             sleep 5
             ELAPSED=$((ELAPSED + 5))
           done
-
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          # If command failed, mark GitHub Actions job as failed
           if [[ "$STATUS" != "Success" ]]; then
             echo "::error ::Deployment failed with status: $STATUS"
           fi
 
+          # Show command output from EC2 in GitHub logs
           echo "==== SSM OUTPUT BEGIN ===="
           aws ssm get-command-invocation \
             --command-id "$CMD_ID" \
@@ -103,3 +105,38 @@ jobs:
             --query "StandardOutputContent" \
             --output text || echo "[ERROR] Could not fetch SSM output"
           echo "==== SSM OUTPUT END ===="
+          
+      - name: Deployment Summary Output
+        if: always()
+        run: |
+          STATUS="${{ steps.ssm.outputs.status }}"
+          TAG="${{ needs.parse-env.outputs.tag_name }}"
+          ENV="${{ needs.parse-env.outputs.env_name }}"
+
+          if [[ "$STATUS" == "Success" ]]; then
+            OUTPUT=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" \
+              --instance-id "${{ secrets.INSTANCE_ID }}" \
+              --region us-east-1 \
+              --query 'StandardOutputContent' \
+              --output text)
+
+            if grep -q "ROLLBACK_INITIATED" <<< "$OUTPUT"; then
+              echo "### ⚠️ Deployment Succeeded but Rollback Was Initiated" >> $GITHUB_STEP_SUMMARY
+              echo "- Tag: $TAG" >> $GITHUB_STEP_SUMMARY
+              echo "- Env: $ENV" >> $GITHUB_STEP_SUMMARY
+              echo "- Logs: s3://${{ secrets.S3_BUCKET_NAME }}/$ENV/logs/" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "### ✅ Deployment Succeeded" >> $GITHUB_STEP_SUMMARY
+              echo "- Tag: $TAG" >> $GITHUB_STEP_SUMMARY
+              echo "- Env: $ENV" >> $GITHUB_STEP_SUMMARY
+              echo "- Logs: s3://${{ secrets.S3_BUCKET_NAME }}/$ENV/logs/" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "### ❌ Deployment Failed" >> $GITHUB_STEP_SUMMARY
+            echo "- Status: $STATUS" >> $GITHUB_STEP_SUMMARY
+            echo "- Tag: $TAG" >> $GITHUB_STEP_SUMMARY
+            echo "- Env: $ENV" >> $GITHUB_STEP_SUMMARY
+            echo "- Investigate logs in S3 or EC2" >> $GITHUB_STEP_SUMMARY
+          fi
+
