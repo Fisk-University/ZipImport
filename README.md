@@ -28,7 +28,9 @@ Before using this plugin ensure:
       - Sudo or appropriate permissions may be necessary
 
 3. **Update php.ini:**
-   - Find your php.ini file with the `php -r "phpinfo();" | grep php.ini` command, or with an info.php page using `<?php phpinfo(); ?>` 
+   - Find your php.ini file. Make a phpinfo page Apache can serve `echo "<?php phpinfo();" | sudo tee /var/www/html/info.php`
+   - Ask Apache for it and grep the two lines we need `curl -s http://127.0.0.1/info.php | grep -E "Server API|Loaded Configuration File|Additional .ini files parsed"`
+ 
    - Adjust the following fields:
      ```
      upload_max_filesize = 1000M
