@@ -40,6 +40,12 @@ class Import extends CSVImport\Job\Import
     protected $mediaMap = [];
 
     /**
+     * Track which CSV identifiers had no media in ZIP
+     * @var array
+     */
+    protected $noMediaIdentifiers = [];
+
+    /**
      * Inject dependencies.
      *
      * @param Job $job
@@ -127,7 +133,20 @@ class Import extends CSVImport\Job\Import
         // Modify batch data to include media info
         foreach ($data as $key => &$item) {
             $identifier = $item['o-module-csv-import:resource-identifier'];
-            $data[$key]['o:media'] = $this->fileMap[$identifier] ?? [];
+            
+            // Check if media exists for this identifier
+            $mediaFiles = $this->fileMap[$identifier] ?? [];
+            
+            // Log if no media found in ZIP for this CSV row
+            if (empty($mediaFiles)) {
+                $this->noMediaIdentifiers[] = $identifier;
+                $this->logger->warn('ZipImport: No media found in ZIP for CSV row', [
+                    'csv_identifier' => $identifier,
+                    'batch_key' => $key
+                ]);
+            }
+            
+            $data[$key]['o:media'] = $mediaFiles;
             unset($this->fileMap[$identifier]);
         }
 
@@ -149,11 +168,40 @@ class Import extends CSVImport\Job\Import
     {
         try {
             $this->buildMediaMapForResource($resourceReference);
+            
+            // Check if this item was one with no media expected
+            $id = $resourceReference->id();
+            $identifier = $this->getItemIdentifier($resourceReference);
+            
+            if ($identifier && in_array($identifier, $this->noMediaIdentifiers)) {
+                $this->logger->info('ZipImport: Item created with NO media (none expected)', [
+                    'csv_identifier' => $identifier,
+                    'item_id' => $id
+                ]);
+            }
         } catch (\Exception $e) {
             $this->logger->warn("Resource media lookup failed");
             $this->logger->err($e->getMessage());
         }
         return parent::buildImportRecordJson($resourceReference);
+    }
+
+    /**
+     * Helper to get item identifier
+     */
+    protected function getItemIdentifier($resourceReference)
+    {
+        try {
+            $id = $resourceReference->id();
+            $identifier = (string) $this->api
+                ->read($resourceReference->resourceName(), $id)
+                ->getContent()
+                ->value('dcterms:identifier')
+                ->value();
+            return $identifier;
+        } catch (\Exception $e) {
+            return null;
+        }
     }
 
     /**
@@ -168,11 +216,7 @@ class Import extends CSVImport\Job\Import
         $id = $resourceReference->id();
     
          // todo: Check if dcterms:identifier is always a safe identifier.
-        $identifier = (string) $this->api
-            ->read($resourceReference->resourceName(), $id) // Fetch this resource
-            ->getContent()
-            ->value('dcterms:identifier') // The only field I'm interested in.
-            ->value();
+        $identifier = $this->getItemIdentifier($resourceReference);
 
         // Early return. No sense in continuing, there has clearly been an issue.
         if (empty($identifier)) {
