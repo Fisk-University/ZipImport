@@ -16,9 +16,9 @@ jobs:
         id: setenv
         run: |
           TAG="${{ github.ref_name }}"
-          ENV=$(echo "$TAG" | grep -oE '(dev|test|stage|prod)$')
+          ENV=$(echo "$TAG" | grep -oE '(dev|stage|prod)$')
           if [ -z "$ENV" ]; then
-            echo "Tag must end in -dev, -test, -stage, or -prod"
+            echo "Tag must end in -dev, -stage, or -prod"
             exit 1
           fi
           echo "env=$ENV" >> $GITHUB_OUTPUT
