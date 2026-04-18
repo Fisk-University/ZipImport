@@ -28,8 +28,17 @@ jobs:
     needs: parse-env
     runs-on: self-hosted
     environment: ${{ needs.parse-env.outputs.env_name }}
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::623539877510:role/github-actions-deploy-role
+          aws-region: us-east-1
+
       - name: Checkout code
         uses: actions/checkout@v3
 
