@@ -1,71 +1,152 @@
-name: Deploy Omeka Module/Theme via Git Tag
+name: Deploy ZipImport Module via Git Tag
 
 on:
   push:
     tags:
-      - 'v*.*.*-*'
+      - 'v*.*.*-*'  # Example: v1.0.0-dev, v2.1.3-stage
 
 jobs:
-  deploy:
+  parse-env:
     runs-on: ubuntu-latest
-    environment: ${{ github.ref_name }}
+    outputs:
+      env_name: ${{ steps.setenv.outputs.env }}
+      tag_name: ${{ github.ref_name }}
+    steps:
+      - name: Parse environment from tag
+        id: setenv
+        run: |
+          TAG="${{ github.ref_name }}"
+          ENV=$(echo "$TAG" | grep -oE '(dev|stage|prod)$')
+          if [ -z "$ENV" ]; then
+            echo "Tag must end in -dev, -stage, or -prod"
+            exit 1
+          fi
+          echo "env=$ENV" >> $GITHUB_OUTPUT
+          echo "tag_name=$TAG" >> $GITHUB_OUTPUT
+
+  deploy:
+    needs: parse-env
+    runs-on: self-hosted
+    environment: ${{ needs.parse-env.outputs.env_name }}
+    permissions:
+      id-token: write
+      contents: read
 
     steps:
-      - name: Checkout repository
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::623539877510:role/github-actions-deploy-role
+          aws-region: us-east-1
+
+      - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Extract target environment
+      - name: Package module artifact
         run: |
-          echo "ENV=$(echo '${{ github.ref }}' | grep -oE '(dev|test|stage|prod)$')" >> $GITHUB_ENV
+          MODULE_NAME="ZipImport"
+          TAG="${{ needs.parse-env.outputs.tag_name }}"
+          ZIP_NAME="${MODULE_NAME}_${TAG}.zip"
+          # Exclude unnecessary .zip file from repo
+          zip -r "$ZIP_NAME" . -x ".git/*" "GitHub Sample Upload Structure.zip"
 
-      - name: Create deployment artifact
-        run: zip -r artifact.zip . -x ".git/*" "*.zip"
+          echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+          echo "TAG=$TAG" >> $GITHUB_ENV
 
-      - name: Configure SSH with ProxyJump (bastion)
+      - name: Upload artifact to S3
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_KEY_BASTION }}" > ~/.ssh/bastion.pem
-          echo "${{ secrets.SSH_KEY_TARGET }}" > ~/.ssh/target.pem
-          chmod 600 ~/.ssh/*.pem
+          aws s3 cp "$ZIP_NAME" "s3://${{ secrets.S3_BUCKET_NAME }}/${{ needs.parse-env.outputs.env_name }}/artifacts/modules/$ZIP_NAME"
 
-          echo "Host bastion" > ~/.ssh/config
-          echo "  HostName ${{ secrets.BASTION_HOST }}" >> ~/.ssh/config
-          echo "  User ec2-user" >> ~/.ssh/config
-          echo "  IdentityFile ~/.ssh/bastion.pem" >> ~/.ssh/config
+      - name: Trigger and Monitor Deployment via SSM
+        id: ssm
+        run: |
+          ENV="${{ needs.parse-env.outputs.env_name }}"
+          TAG="${{ needs.parse-env.outputs.tag_name }}"
+          INSTANCE_ID="${{ secrets.INSTANCE_ID }}"
+          S3_BUCKET="${{ secrets.S3_BUCKET_NAME }}"
+          ZIP_NAME="ZipImport_${TAG}.zip"
 
-          echo "Host target" >> ~/.ssh/config
-          echo "  HostName ${{ secrets.TARGET_HOST }}" >> ~/.ssh/config
-          echo "  User ubuntu" >> ~/.ssh/config
-          echo "  IdentityFile ~/.ssh/target.pem" >> ~/.ssh/config
-          echo "  ProxyJump bastion" >> ~/.ssh/config
+          echo "Starting deployment..."
+          CMD_ID=$(aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --instance-ids "$INSTANCE_ID" \
+            --comment "Deploy ZipImport Module $TAG" \
+            --parameters "commands=[
+            \"aws s3 cp s3://$S3_BUCKET/$ENV/artifacts/modules/$ZIP_NAME /tmp/module-artifact.zip\",
+            \"unzip -o /tmp/module-artifact.zip -d /tmp/deployed-module\",
+            \"chmod +x /tmp/deployed-module/.github/workflows/deploy.sh\",
+            \"/tmp/deployed-module/.github/workflows/deploy.sh $ENV $TAG\"
+            ]" \
+            --region us-east-1 \
+            --query "Command.CommandId" \
+            --output text)
 
-      - name: Upload artifact.zip via SCP
-        uses: appleboy/scp-action@v0.1.3
-        with:
-          host: ${{ secrets.TARGET_HOST }}
-          username: ubuntu
-          key: ${{ secrets.SSH_KEY_TARGET }}
-          port: 22
-          source: artifact.zip
-          target: "~"
+          echo "SSM Command ID: $CMD_ID"
+          echo "CMD_ID=$CMD_ID" >> $GITHUB_ENV
+          echo "Waiting for deployment to complete..."
+          sleep 15
+          STATUS="InProgress"
+          TIMEOUT=60
+          ELAPSED=0
 
-      - name: Upload deploy.sh via SCP
-        uses: appleboy/scp-action@v0.1.3
-        with:
-          host: ${{ secrets.TARGET_HOST }}
-          username: ubuntu
-          key: ${{ secrets.SSH_KEY_TARGET }}
-          port: 22
-          source: .github/workflows/deploy.sh
-          target: "~"
+          while [[ "$STATUS" == "InProgress" && "$ELAPSED" -lt "$TIMEOUT" ]]; do
+            STATUS=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --region us-east-1 \
+              --query "Status" \
+              --output text)
+            echo "Current status: $STATUS"
+            sleep 5
+            ELAPSED=$((ELAPSED + 5))
+          done
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
+          # If command failed, mark GitHub Actions job as failed
+          if [[ "$STATUS" != "Success" ]]; then
+            echo "::warning ::SSM status was: $STATUS — deployment script may have still succeeded or been rolled back."
+          fi
 
-      - name: Run deploy.sh via SSH
-        uses: appleboy/ssh-action@master
-        with:
-          host: ${{ secrets.TARGET_HOST }}
-          username: ubuntu
-          key: ${{ secrets.SSH_KEY_TARGET }}
-          port: 22
-          script: |
-            chmod +x ~/deploy.sh
-            ~/deploy.sh ${{ env.ENV }} ${{ github.ref_name }}
+          # Show command output from EC2 in GitHub logs
+          echo "==== SSM OUTPUT BEGIN ===="
+          aws ssm get-command-invocation \
+            --command-id "$CMD_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --region us-east-1 \
+            --query "StandardOutputContent" \
+            --output text || echo "[ERROR] Could not fetch SSM output"
+          echo "==== SSM OUTPUT END ===="
+
+      - name: Deployment Summary Output
+        if: always()
+        run: |
+          STATUS="${{ steps.ssm.outputs.status }}"
+          TAG="${{ needs.parse-env.outputs.tag_name }}"
+          ENV="${{ needs.parse-env.outputs.env_name }}"
+
+          if [[ "$STATUS" == "Success" ]]; then
+            OUTPUT=$(aws ssm get-command-invocation \
+              --command-id "$CMD_ID" \
+              --instance-id "${{ secrets.INSTANCE_ID }}" \
+              --region us-east-1 \
+              --query 'StandardOutputContent' \
+              --output text)
+
+            if grep -q "ROLLBACK_INITIATED" <<< "$OUTPUT"; then
+              echo "### ⚠️ Deployment Succeeded but Rollback Was Initiated" >> $GITHUB_STEP_SUMMARY
+              echo "- Tag: $TAG" >> $GITHUB_STEP_SUMMARY
+              echo "- Env: $ENV" >> $GITHUB_STEP_SUMMARY
+              echo "- Logs: s3://${{ secrets.S3_BUCKET_NAME }}/$ENV/logs/" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "### ✅ Deployment Succeeded" >> $GITHUB_STEP_SUMMARY
+              echo "- Tag: $TAG" >> $GITHUB_STEP_SUMMARY
+              echo "- Env: $ENV" >> $GITHUB_STEP_SUMMARY
+              echo "- Logs: s3://${{ secrets.S3_BUCKET_NAME }}/$ENV/logs/" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "### ❌ Deployment Failed" >> $GITHUB_STEP_SUMMARY
+            echo "- Status: $STATUS" >> $GITHUB_STEP_SUMMARY
+            echo "- Tag: $TAG" >> $GITHUB_STEP_SUMMARY
+            echo "- Env: $ENV" >> $GITHUB_STEP_SUMMARY
+            echo "- Investigate logs in S3 or EC2" >> $GITHUB_STEP_SUMMARY
+          fi
+
