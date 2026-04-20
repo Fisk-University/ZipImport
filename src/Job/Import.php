@@ -46,6 +46,18 @@ class Import extends CSVImport\Job\Import
     protected $noMediaIdentifiers = [];
 
     /**
+     * Checksum manifest: path => sha256 hash (pre-import)
+     * @var array
+     */
+    protected $checksumManifest = [];
+
+    /**
+     * Track skipped files with reasons
+     * @var array
+     */
+    protected $skippedFiles = [];
+
+    /**
      * Inject dependencies.
      *
      * @param Job $job
@@ -69,7 +81,93 @@ class Import extends CSVImport\Job\Import
     public function perform()
     {
         $this->initalizeFileMap();
+        $this->generateChecksumManifest();
         parent::perform();
+        $this->validateFileIntegrity();
+        $this->logSkippedFilesSummary();
+    }
+
+    /**
+     * Generate SHA-256 checksums for all files in the file map before import.
+     */
+    protected function generateChecksumManifest()
+    {
+        $logger = $this->getServiceLocator()->get('Omeka\Logger');
+        $count = 0;
+        foreach ($this->fileMap as $identifier => $files) {
+            foreach ($files as $file) {
+                $path = $file['filepath'] ?? null;
+                if ($path && is_file($path)) {
+                    $this->checksumManifest[$path] = hash_file('sha256', $path);
+                    $count++;
+                }
+            }
+        }
+        $logger->info(
+            "ZipImport: Checksum manifest generated for $count files before import."
+        );
+    }
+
+    /**
+     * Validate file integrity after import by comparing checksums.
+     */
+    protected function validateFileIntegrity()
+    {
+        $logger = $this->getServiceLocator()->get('Omeka\Logger');
+        $mismatches = 0;
+        $missing = 0;
+        foreach ($this->checksumManifest as $path => $expectedHash) {
+            if (!is_file($path)) {
+                // File was consumed/moved during import — expected behavior
+                $missing++;
+                continue;
+            }
+            $currentHash = hash_file('sha256', $path);
+            if ($currentHash !== $expectedHash) {
+                $mismatches++;
+                $this->hasErr = true;
+                $logger->err(
+                    "ZipImport: File integrity mismatch detected.\n" .
+                    "   File: $path\n" .
+                    "   Expected SHA-256: $expectedHash\n" .
+                    "   Actual SHA-256:   $currentHash"
+                );
+            }
+        }
+
+        $total = count($this->checksumManifest);
+        $logger->info(
+            "ZipImport: Integrity check complete. " .
+            "Total=$total, Consumed=$missing, Verified=" . ($total - $missing) . ", Mismatches=$mismatches"
+        );
+    }
+
+    /**
+     * Log a summary of all skipped files with reasons.
+     */
+    protected function logSkippedFilesSummary()
+    {
+        $logger = $this->getServiceLocator()->get('Omeka\Logger');
+        if (empty($this->skippedFiles)) {
+            $logger->info("ZipImport: No files were skipped during import.");
+            return;
+        }
+
+        $byReason = [];
+        foreach ($this->skippedFiles as $entry) {
+            $reason = $entry['reason'];
+            $byReason[$reason][] = $entry['path'];
+        }
+
+        $logger->warn(
+            "ZipImport: " . count($this->skippedFiles) . " file(s) skipped during import."
+        );
+        foreach ($byReason as $reason => $paths) {
+            $logger->warn(
+                "ZipImport: Skipped (" . count($paths) . ") — Reason: $reason\n" .
+                "   Files: " . implode(', ', array_map('basename', $paths))
+            );
+        }
     }
 
     /**
@@ -281,9 +379,14 @@ class Import extends CSVImport\Job\Import
      */
     protected function addToFileMap($identifier, $path)
     {
-        if (!$this->isValidMedia($path)) {
+        $skipReason = $this->validateMedia($path);
+        if ($skipReason !== null) {
+            $this->skippedFiles[] = ['path' => $path, 'reason' => $skipReason];
             $this->getServiceLocator()->get('Omeka\Logger')->info(
-                "Skipping media import of $path, as it is not valid media."
+                "ZipImport: Skipping file.\n" .
+                "   File: $path\n" .
+                "   Identifier: $identifier\n" .
+                "   Reason: $skipReason"
             );
             return;
         }
@@ -299,23 +402,41 @@ class Import extends CSVImport\Job\Import
     }
 
     /**
-     * Determine whether the provided path is a valid mediafile.
+     * Validate whether the provided path is importable media.
+     * Returns null if valid, or a string describing the skip reason.
+     *
+     * @param string $path
+     * @return string|null
+     */
+    protected function validateMedia($path)
+    {
+        if (!is_file($path)) {
+            return "Not a file (path does not exist or is a directory)";
+        }
+
+        $mimetype = new \finfo(FILEINFO_MIME_TYPE);
+        $mediaType = $mimetype->file($path);
+        if (!in_array($mediaType, $this->mediaTypes)) {
+            return "MIME type '$mediaType' is not in the allowed media types whitelist";
+        }
+
+        $ext = pathinfo($path, PATHINFO_EXTENSION);
+        if (!in_array($ext, $this->extensions)) {
+            return "Extension '.$ext' is not in the allowed extensions whitelist";
+        }
+
+        return null;
+    }
+
+    /**
+     * Legacy wrapper for backward compatibility.
      *
      * @param mixed $path
      * @return bool
      */
     protected function isValidMedia($path)
     {
-        if (!is_file($path)) return false;
-
-        $mimetype = new \finfo(FILEINFO_MIME_TYPE);
-        $mediaType = $mimetype->file($path);
-        if (!in_array($mediaType, $this->mediaTypes)) return false;
-
-        $ext = pathinfo($path, PATHINFO_EXTENSION);
-        if (!in_array($ext, $this->extensions)) return false;
-    
-        return true;
+        return $this->validateMedia($path) === null;
     }
 
     /**
