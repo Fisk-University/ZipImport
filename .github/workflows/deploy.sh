@@ -55,13 +55,25 @@ if [ "$FAIL" == "1" ]; then
   aws s3 cp "$LOG_FILE" "s3://${S3_BUCKET}/${ENV}/logs/modules/${MODULE_NAME}_${TAG}_FAILED.log"
   aws s3 cp --recursive "$BACKUP_DIR/" "s3://${S3_BUCKET}/${ENV}/backups/modules/${MODULE_NAME}_${TAG}/"
   echo "[INFO] Check rollback logs in S3" | tee -a "$LOG_FILE"
-  echo "ROLLBACK_INITIATED"
-  exit 1
+fi
+
+# Cleanup any leftover -broken- module folders after deployment or rollback
+MODULES_PATH="/var/www/html/omeka-s/modules"
+if [ -d "$MODULES_PATH" ]; then
+  echo "[CLEANUP] Removing any leftover -broken- module folders..." | tee -a "$LOG_FILE"
+  find "$MODULES_PATH" -maxdepth 1 -type d -name "*-broken-*" -exec rm -rf {} + 2>/dev/null || true
+  echo "[INFO] Cleanup complete" | tee -a "$LOG_FILE"
 fi
 
 # Upload logs
 rm -rf /tmp/module-artifact.zip /tmp/deployed-module
 aws s3 cp "$LOG_FILE" "s3://${S3_BUCKET}/${ENV}/logs/modules/${MODULE_NAME}_deploy_${TAG}.log"
 aws s3 cp --recursive "$BACKUP_DIR/" "s3://${S3_BUCKET}/${ENV}/backups/modules/${MODULE_NAME}_${TAG}/"
+
+if [ "$FAIL" == "1" ]; then
+  echo "ROLLBACK_INITIATED"
+  exit 1
+fi
+
 echo "[COMPLETE] $MODULE_NAME module deployment successful: $TAG" | tee -a "$LOG_FILE"
 echo "DEPLOYMENT_SUCCESS"

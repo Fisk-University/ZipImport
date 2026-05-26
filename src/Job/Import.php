@@ -73,6 +73,18 @@ class Import extends CSVImport\Job\Import
     }
 
     /**
+     * Valid identifiers extracted from CSV for strict directory matching.
+     * @var array
+     */
+    protected $validIdentifiers = [];
+
+    /**
+     * Directories in ZIP that don't match any CSV identifier.
+     * @var array
+     */
+    protected $unmatchedDirectories = [];
+
+    /**
      * Before performing the csvimport, gather all of the assumed media files in
      * the archive and map them to an assumed row identifier.
      *
@@ -80,11 +92,13 @@ class Import extends CSVImport\Job\Import
      */
     public function perform()
     {
+        $this->extractValidIdentifiersFromCSV();
         $this->initalizeFileMap();
         $this->generateChecksumManifest();
         parent::perform();
         $this->validateFileIntegrity();
         $this->logSkippedFilesSummary();
+        $this->logUnmatchedDirectories();
     }
 
     /**
@@ -171,6 +185,27 @@ class Import extends CSVImport\Job\Import
     }
 
     /**
+     * Log unmatched directories found in ZIP that don't correspond to CSV identifiers.
+     * This is a strict validation check for archive accuracy.
+     */
+    protected function logUnmatchedDirectories()
+    {
+        $logger = $this->getServiceLocator()->get('Omeka\Logger');
+        if (empty($this->unmatchedDirectories)) {
+            $logger->info("ZipImport: All directories in ZIP matched valid CSV identifiers (strict validation passed).");
+            return;
+        }
+
+        $this->hasErr = true;
+        $logger->err(
+            "ZipImport: STRICT VALIDATION FAILED — " . count($this->unmatchedDirectories) .
+            " directory(ies) in ZIP do not match any CSV identifier.\n" .
+            "   Unmatched directories: " . implode(', ', $this->unmatchedDirectories) . "\n" .
+            "   Valid identifiers: " . implode(', ', array_keys($this->validIdentifiers))
+        );
+    }
+
+    /**
      * Before bailing on a successful job, go ahead and ensure there were no missed
      * media hits. If there were, fail the job instead and report the skipped
      * media.
@@ -238,10 +273,11 @@ class Import extends CSVImport\Job\Import
             // Log if no media found in ZIP for this CSV row
             if (empty($mediaFiles)) {
                 $this->noMediaIdentifiers[] = $identifier;
-                $this->logger->warn('ZipImport: No media found in ZIP for CSV row', [
-                    'csv_identifier' => $identifier,
-                    'batch_key' => $key
-                ]);
+                $this->logger->warn(
+                    "ZipImport: No media found in ZIP for CSV row\n" .
+                    "   Identifier: $identifier\n" .
+                    "   Batch key: $key"
+                );
             }
             
             $data[$key]['o:media'] = $mediaFiles;
@@ -272,10 +308,11 @@ class Import extends CSVImport\Job\Import
             $identifier = $this->getItemIdentifier($resourceReference);
             
             if ($identifier && in_array($identifier, $this->noMediaIdentifiers)) {
-                $this->logger->info('ZipImport: Item created with NO media (none expected)', [
-                    'csv_identifier' => $identifier,
-                    'item_id' => $id
-                ]);
+                $this->logger->info(
+                    "ZipImport: Item created with NO media (none expected)\n" .
+                    "   Identifier: $identifier\n" .
+                    "   Item ID: $id"
+                );
             }
         } catch (\Exception $e) {
             $this->logger->warn("Resource media lookup failed");
@@ -334,8 +371,58 @@ class Import extends CSVImport\Job\Import
     }
 
     /**
+     * Extract valid identifiers from the CSV for strict matching against directories.
+     * Uses the identifier column specified in job args.
+     *
+     * @return void
+     */
+    protected function extractValidIdentifiersFromCSV()
+    {
+        $csvPath = $this->getArg('filepath');
+        $identifierColumn = (int) $this->getArg('identifier_column', 0);
+
+        if (!is_file($csvPath)) {
+            $this->logger->warn("ZipImport: CSV file not found at $csvPath");
+            return;
+        }
+
+        $handle = fopen($csvPath, 'r');
+        if (!$handle) {
+            $this->logger->warn("ZipImport: Unable to open CSV file for identifier extraction");
+            return;
+        }
+
+        $lineNum = 0;
+        while (($line = fgetcsv($handle)) !== false) {
+            $lineNum++;
+
+            // Skip header row
+            if ($lineNum === 1) {
+                continue;
+            }
+
+            // Extract identifier from the specified column
+            if (isset($line[$identifierColumn]) && !empty($line[$identifierColumn])) {
+                $identifier = trim($line[$identifierColumn]);
+                if ($identifier !== '') {
+                    $this->validIdentifiers[$identifier] = true;
+                }
+            }
+        }
+
+        fclose($handle);
+
+        $logger = $this->getServiceLocator()->get('Omeka\Logger');
+        $logger->info(
+            "ZipImport: Extracted " . count($this->validIdentifiers) .
+            " valid identifiers from CSV for strict directory matching."
+        );
+    }
+
+    /**
      * Traverse the directory that the CSV lives in to pull out all media files,
      * and organize them by their assumed row identifiers.
+     * Uses strict matching: only directories matching CSV identifiers are processed.
      *
      * @return void
      */
@@ -343,17 +430,32 @@ class Import extends CSVImport\Job\Import
     {
         $csvPath = $this->getArg('filepath');
         $dir = dirname($csvPath);
+        $logger = $this->getServiceLocator()->get('Omeka\Logger');
+
+        // System directories to always skip (not counted as unmatched)
+        $systemDirs = ['.', '..', '__MACOSX', '.git', '.DS_Store', 'node_modules'];
 
         // Loop through all files sibling to the csv
         foreach (scandir($dir) as $file) {
-            if (in_array($file, ['.', '..'])) continue;
+            // Skip system directories silently
+            if (in_array($file, $systemDirs)) {
+                continue;
+            }
 
             $path = $dir . DIRECTORY_SEPARATOR . $file;
 
             if ($path === $csvPath) continue;
 
-            // If I see a directory add all child media to the filemap
+            // STRICT MATCHING: Only process directories that match CSV identifiers
             if (is_dir($path)) {
+                // Check if this directory matches a valid identifier
+                if (!isset($this->validIdentifiers[$file])) {
+                    // Record unmatched directory for later reporting
+                    $this->unmatchedDirectories[] = $file;
+                    continue;
+                }
+
+                // Process media files in this directory
                 foreach (scandir($path) as $child) {
                     $cPath = $path . DIRECTORY_SEPARATOR . $child;
 
@@ -363,7 +465,22 @@ class Import extends CSVImport\Job\Import
                     $this->addToFileMap($file, $cPath);
                 }
             } else {
-                $this->addToFileMap(pathinfo($path, PATHINFO_FILENAME), $path);
+                // Files at root level - process if they match an identifier
+                $filename = pathinfo($path, PATHINFO_FILENAME);
+                if (isset($this->validIdentifiers[$filename])) {
+                    $this->addToFileMap($filename, $path);
+                } else {
+                    // Root-level file doesn't match any identifier
+                    $this->skippedFiles[] = [
+                        'path' => $path,
+                        'reason' => "File at root level; identifier '$filename' not found in CSV"
+                    ];
+                    $logger->info(
+                        "ZipImport: Skipping root-level file.\n" .
+                        "   File: $path\n" .
+                        "   Reason: Identifier '$filename' not found in CSV"
+                    );
+                }
             }
         }
     }

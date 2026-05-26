@@ -134,6 +134,11 @@ class IndexController extends CSVImport\Controller\IndexController
         $mappingOptions['columns'] = $columns;
         $form = $this->getForm(CSVImport\Form\MappingForm::class, $mappingOptions);
 
+        // Clear the owner field to prevent carrying over from previous uploads
+        if ($form->has('basic-settings') && $form->get('basic-settings')->has('o:owner')) {
+            $form->get('basic-settings')->get('o:owner')->setValue(null);
+        }
+
         // Replace csv action with zip-specific version
         $form->setAttribute('action', 'mapping');
 
