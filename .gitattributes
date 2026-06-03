@@ -1,0 +1,53 @@
+# Git Attributes for Omeka S Module
+# This file configures which files are excluded from release archives
+# created with: git archive --output=ModuleName.zip --prefix=ModuleName/ main
+
+# Exclude repository configuration files
+/.gitattributes export-ignore
+/.gitignore export-ignore
+
+# Exclude GitHub workflows and CI/CD configuration
+/.github/ export-ignore
+
+# Exclude dependency files and directories
+/vendor/ export-ignore
+/node_modules/ export-ignore
+composer.lock export-ignore
+package-lock.json export-ignore
+
+# Exclude development and build configuration
+/.editorconfig export-ignore
+/webpack.config.js export-ignore
+/gulpfile.js export-ignore
+/Makefile export-ignore
+
+# Exclude development and testing tools
+/tests/ export-ignore
+/.phpunit.xml export-ignore
+/phpunit.xml export-ignore
+/.eslintrc export-ignore
+/.eslintignore export-ignore
+
+# Exclude Transifex translation configuration
+/.tx/ export-ignore
+
+# Exclude translation source files
+/language/*.pot export-ignore
+
+# Exclude OS-specific files
+.DS_Store export-ignore
+.DS_Store? export-ignore
+*.swp export-ignore
+*.swo export-ignore
+*~ export-ignore
+Thumbs.db export-ignore
+
+# Exclude development environment files
+/.env export-ignore
+/.env.local export-ignore
+/debug.log export-ignore
+/.vscode/ export-ignore
+/.idea/ export-ignore
+
+# Keep important files
+!.gitkeep
