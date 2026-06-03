@@ -50,4 +50,3 @@ Thumbs.db export-ignore
 /.idea/ export-ignore
 
 # Keep important files
-!.gitkeep
