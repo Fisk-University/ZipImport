@@ -7,7 +7,6 @@
 /.gitignore export-ignore
 
 # Exclude GitHub workflows and CI/CD configuration
-/.github/ export-ignore
 
 # Exclude dependency files and directories
 /vendor/ export-ignore
